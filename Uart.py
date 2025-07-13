@@ -15,7 +15,7 @@ class Task(IntEnum):
     DETECT_paper = 0x06
     LOCATE_box = 0x07
     LOCATE_paper = 0x08
-
+    PLACE_box = 0x09
 
 
 class Uart:
@@ -32,17 +32,47 @@ class Uart:
         self.receive_thread.daemon = True
         self.receive_thread.start()
 
+    # def _pack_command(self, cmd_type, data):
+    #     """协议格式: [STX][CMD][LEN][DATA...][ETX]"""
+    #     stx = b'\x02'
+    #     etx = b'\x03'
+    #     cmd_byte = struct.pack('>B', cmd_type)
+    #     int_data = [int(x) for x in data]  # 强制转换为整数
+    #     data_bytes = struct.pack('>'+'H'*len(int_data), *int_data)
+    #     # data_bytes = struct.pack('!'+'f'*len(data), *data)
+    #     # length = struct.pack('B', len(data_bytes))
+    #     pack_data = stx + cmd_byte + data_bytes + etx
+    #     # print("pack_data:",pack_data)
+    #     return pack_data
+
     def _pack_command(self, cmd_type, data):
-        """协议格式: [STX][CMD][LEN][DATA...][ETX]"""
+        """协议格式: [STX][CMD][LEN][DATA...][ETX]
+        支持处理十六进制字符串形式的data参数
+        """
         stx = b'\x02'
         etx = b'\x03'
         cmd_byte = struct.pack('>B', cmd_type)
-        int_data = [int(x) for x in data]  # 强制转换为整数
-        data_bytes = struct.pack('>'+'H'*len(int_data), *int_data)
-        # data_bytes = struct.pack('!'+'f'*len(data), *data)
-        # length = struct.pack('B', len(data_bytes))
+        # 处理可能包含十六进制字符串的数据
+        int_data = []
+        for x in data:
+            if isinstance(x, str):
+                # 如果是字符串，尝试解析为十六进制(以0x开头)或十进制
+                if x.lower().startswith('0x'):
+                    int_data.append(int(x, 16))
+                else:
+                    int_data.append(int(x))
+            else:
+                # 如果不是字符串，直接转换为整数
+                int_data.append(int(x))
+
+        # 动态选择数据打包格式
+        if cmd_type == RobotCommand.LOCATE:  # LOCATE 指令，使用 2 字节 (H)
+            data_format = '>' + 'H' * len(int_data)  # 大端序，无符号短整型
+        else:                 # 其他指令，使用 1 字节 (B)
+            data_format = '>' + 'B' * len(int_data)  # 大端序，无符号字节
+
+        data_bytes = struct.pack(data_format, *int_data)  # 打包数据
         pack_data = stx + cmd_byte + data_bytes + etx
-        # print("pack_data:",pack_data)
         return pack_data
     
     def send_move_command(self, direction):
@@ -52,35 +82,61 @@ class Uart:
         :param distance: 移动距离(mm)
         """
         with self.lock:
-            cmd_data = [direction]
+            cmd_data = [direction, 0, 0, 0]
             packet = self._pack_command(RobotCommand.MOVE, cmd_data)
             self.serial.write(packet)
             print(f"发送移动指令: 方向{'左' if direction==0 else '右'} ")
 
-    def send_grab_command(self, x, y, layer):
-        """
-        发送抓取指令
-        :param x: 货架X坐标 (mm)
-        :param y: 货架Y坐标 (mm)
-        :param layer: 0-下层, 1-上层
-        """
-        with self.lock:
-            cmd_data = [x, y, layer]
-            packet = self._pack_command(RobotCommand.GRAB, cmd_data)
-            self.serial.write(packet)
-            print(f"发送抓取指令: X{x} Y{y} 层{layer}")
+    # def send_grab_command(self, x, y, layer):
+    #     """
+    #     发送抓取指令
+    #     :param x: 货架X坐标 (mm)
+    #     :param y: 货架Y坐标 (mm)
+    #     :param layer: 0-下层, 1-上层
+    #     """
+    #     with self.lock:
+    #         cmd_data = [x, y, layer]
+    #         packet = self._pack_command(RobotCommand.GRAB, cmd_data)
+    #         self.serial.write(packet)
+    #         print(f"发送抓取指令: X{x} Y{y} 层{layer}")
 
-    def send_place_command(self, zone, position):
+    def send_place_command(self, command):
         """
-        发送放置指令
-        :param zone: 0-左侧, 1-右侧
-        :param position: 放置位置(0-2 对应a-c/d-f)
+        发送包含高度信息的放置指令。
+        :param command: 一个包含放置信息的字典，格式如下：
+                        {
+                            'zone': 'a', 'b', 'c', 'd', 'e', 'f',
+                            'height': 'high' or 'low',
+                            'box_num': 1-6 (可选，用于日志打印)
+                        }
         """
+        # --- 数据转换与校验 ---
+        boxkey_char = command.get('box_key')
+        height_char = command.get('height')
+
+        # 处理 box_key 映射
+        if boxkey_char in ['A', 'B', 'C', 'D', 'E', 'F']:
+            box_id = ord(boxkey_char) - ord('A') + 1  # 'A'->1, 'B'->2, ..., 'F'->6
+
+        if height_char == 'high':
+            height_id = 0 # 0 代表高位
+        elif height_char == 'low':
+            height_id = 1 # 1 代表低位
+        else:
+            print(f"错误：无效的高度信息 '{height_char}'")
+            return False
+
         with self.lock:
-            cmd_data = [zone, position]
+            cmd_data = [box_id, height_id, 0, 0]
             packet = self._pack_command(RobotCommand.PLACE, cmd_data)
-            self.serial.write(packet)
-            print(f"发送放置指令: 区域{'左' if zone==0 else '右'} 位置{position}")
+
+            self.serial.write(packet) 
+            
+            # # 5. 打印详细的日志信息
+            # height_text = "高位（叠放）" if height_id == 0 else "低位（直接放置）"
+            # print(f"位置={zone_char}" f"高度={height_text}")
+        
+        return True # 假设发送成功
 
     def send_locate_command(self, x, y):
         """
@@ -91,7 +147,7 @@ class Uart:
         with self.lock:
             cmd_data = [x, y]
             packet = self._pack_command(RobotCommand.LOCATE, cmd_data)
-            print("packet:",packet)
+            print(f"packet: { [hex(b) for b in packet] }") 
             self.serial.write(packet)
             print(f"发送定位坐标指令: X{x} Y{y}")
 

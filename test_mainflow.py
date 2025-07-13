@@ -2,7 +2,7 @@ import cv2
 import time
 from CameraDetect import CameraDetect
 from Uart import Uart, Task
-from LogisticsRobot import LogisticsRobot
+from LogisticsRobot_pro import LogisticsRobot
 import RPi.GPIO as GPIO
 
 
@@ -27,7 +27,7 @@ def angleToDutyCycle(angle):
 
 def main():
     uart = Uart()
-    p = complex_change(12)
+    # p = complex_change(12)
     cam = CameraDetect(uart)
     cam._init_camera(1)  # 初始化摄像头
     fcn = LogisticsRobot(uart)
@@ -68,10 +68,23 @@ def main():
             p.ChangeDutyCycle(0)
         
         elif uart.current_task == Task.LOCATE_paper:
-            while uart.flag_paper == 0:
-                x, y = cam.locate_paper()
+            while uart.flag_paper > 1:
+                x, y = cam.locate_paper(uart.flag_paper-1)
                 uart.send_locate_command(x, y)
+            # while True:
+            #      x,y = cam.locate_paper(2)
+            #      uart.send_locate_command(x,y)
             print("arrive::::::::::::::")
+
+        elif uart.current_task == Task.PLACE_box:
+
+            # fcn.execute_placement()
+            fcn.initialize_state_after_scan()
+
+            # 4. 执行放置策略
+            fcn.execute_placement()
+
+            uart.current_task = None
 
 
 
