@@ -10,7 +10,8 @@ import subprocess
 from typing import Dict, List, Tuple
 # from detect import YOLOv5Detector  # 导入新的检测器类
 import argparse
-import torch
+# import torch
+import cv2.aruco  # 明确导入 aruco 模块
 
 dim_blue_min =  [90,25,84]#100 60 80
 dim_blue_max =  [140,255,255]#124 230 255
@@ -40,10 +41,23 @@ class CameraDetect:
         self.box_mapping={}
         self.cap_detect = None
         self.cap_locate = None
-
-        # # 初始化YOLO检测器（只初始化一次）
-        # if cam_mode == 0:
-        #     self._init_detector()
+        # --- 新增：AprilTag 定位相关属性 ---
+        self.mtx = None              # 相机内参矩阵
+        self.dist = None             # 相机畸变系数
+        self.aruco_dict = None
+        self.aruco_params = None
+        # 【请务必根据您的实际情况修改以下两个值】
+        self.MARKER_SIZE_M = 0.10    # AprilTag的实际边长（单位：米）。例如，5厘米就是0.05
+        # self.TARGET_DISTANCE_Z_M = 0.3 # 机器人定位完成时，希望距离AprilTag多远（单位：米）
+        self._init_aruco_detector()
+        # 根据模式初始化
+        if cam_mode == 0:
+            # self._init_detector() # 初始化YOLO
+            self._init_camera(cam_mode)
+        elif cam_mode == 1:
+            self._init_camera(cam_mode)
+            # 为定位相机初始化AprilTag检测器
+            # self._init_aruco_detector()
 
 
     def _init_detector(self):
@@ -159,7 +173,7 @@ class CameraDetect:
                 raise ValueError(f"发现{len(empty_positions)}个空位，应为1个！")
             print(f"分析结果：位置 {empty_positions[0]} 缺失编号 {missing_num}")
 
-        return self.zone_mapping
+            return self.zone_mapping, missing_num, empty_positions
     
     def detect_boxes(self):
         """
@@ -203,17 +217,16 @@ class CameraDetect:
         lower = [b for b in boxes if b['y'] >= y_median]
 
         # 按X坐标排序并提取编号
-        upper_sorted = sorted(upper, key=lambda x: x['x'])
+        upper_sorted = sorted(upper, key=lambda x: x['x'], reverse=True)
         lower_sorted = sorted(lower, key=lambda x: x['x'])
 
-        # # 将结果存储到类的属性中
-        # self.upper = [b['number'] for b in upper_sorted]
-        # self.lower = [b['number'] for b in lower_sorted]
+        # 将结果存储到类的属性中
+        self.upper = [b['number'] for b in upper_sorted]
+        self.lower = [b['number'] for b in lower_sorted]
 
-        return (
-            [b['number'] for b in upper_sorted],
-            [b['number'] for b in lower_sorted]
-        )
+        self.convert_box_layers_to_dict(self)  #转换成字典
+
+        return self.upper, self.lower, self.box_mapping
         
     def process_frame(self, frame):
         """
@@ -237,7 +250,7 @@ class CameraDetect:
                 如果货箱数量不符预期，则返回一个空字典或部分映射。
         """
         positions = ['A', 'B', 'C', 'D', 'E', 'F']
-        layers = [self.upper, self.lower]
+        layers = [self.lower, self.upper]
 
         for i, layer in enumerate(layers):
             if len(layer) != 3:
@@ -736,162 +749,6 @@ class CameraDetect:
         return x_offset, y_offset
 
 
-    def locate_paper_by_guided_edge111(self, rect_count=1, paper_width_range=(150, 250), paper_height_pixels=145):
-        """
-        通过侧边线引导，几何重构底边线，精确定位纸垛。
-        支持根据位置和大小选择特定纸垛。
-        :param rect_count: 1=视野中最大, 2=中线左侧最大, 3=中线右侧最大
-        :param paper_width_range: 纸垛在图像中的像素宽度范围 (min_width, max_width)
-        :param paper_height_pixels: 纸垛的估计像素高度
-        :return: (x_offset, y_offset)
-        """
-        if self.cap_locate is None:
-            print("相机未初始化")
-            return 0, 0
-            
-        ret, self.frame = self.cap_locate.read()
-        if not ret or self.frame is None:
-            print("读取图像失败")
-            return 0, 0
-
-        src_for_display = self.frame.copy()
-        h, w = self.frame.shape[:2]
-        midline_x = w // 2
-
-        # --- 步骤 1: 预处理和霍夫变换 ---
-        gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-        gamma = 0.5
-        invgamma = 1 / gamma
-        gamma_image = np.array(np.power((gray / 255.0), invgamma) * 255, dtype=np.uint8)
-        cv2.imshow("gamma", gamma_image)
-        # 高斯模糊
-        blurred1 = cv2.GaussianBlur(gamma_image, (9, 9), 2)
-        equalized = cv2.equalizeHist(gray)
-        blurred = cv2.GaussianBlur(equalized, (5, 5), 0)
-        kernel = np.ones((5, 5), np.uint8)
-        closed = cv2.morphologyEx(blurred1, cv2.MORPH_CLOSE, kernel, iterations=2)
-        edges = cv2.Canny(closed, 50, 150)
-        kernel1 = np.ones((5, 5), np.uint8)
-        clodes_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel1, iterations=2)
-        _, binary_edges = cv2.threshold(clodes_edges, 128, 255, cv2.THRESH_BINARY)
-        binary_edges[350:,:] = 0
-        cv2.imshow("Edges for Line Detection", binary_edges)
-
-        
-        lines = cv2.HoughLinesP(binary_edges, 1, np.pi / 180, threshold=30, minLineLength=100, maxLineGap=25)
-        
-        if lines is None:
-            # 即使没找到线，也要显示中线并返回
-            cv2.line(src_for_display, (midline_x, 0), (midline_x, h), (0, 255, 255), 1)
-            cv2.imshow("Paper Detection", src_for_display)
-            cv2.waitKey(1)
-            return 0, 0
-
-        # --- 步骤 2: 找到所有可能的纸垛候选者 ---
-        horizontal_lines = []
-        vertical_lines = []
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            angle = abs(math.degrees(math.atan2(y2 - y1, x2 - x1)))
-            if angle < 10 or abs(angle - 180) < 10:
-                horizontal_lines.append({'line': line[0], 'y_pos': (y1 + y2) / 2})
-            elif abs(angle - 90) < 10:
-                vertical_lines.append({'line': line[0], 'x_pos': (x1 + x2) / 2})
-        
-        paper_candidates = []
-        # 遍历所有垂直线组合，寻找侧边线对
-        for i in range(len(vertical_lines)):
-            for j in range(i + 1, len(vertical_lines)):
-                line1_info = vertical_lines[i]
-                line2_info = vertical_lines[j]
-                
-                pair_width = abs(line1_info['x_pos'] - line2_info['x_pos'])
-                if not (paper_width_range[0] < pair_width < paper_width_range[1]):
-                    continue
-                
-                left_edge, right_edge = (line1_info, line2_info) if line1_info['x_pos'] < line2_info['x_pos'] else (line2_info, line1_info)
-                x_left, x_right = left_edge['x_pos'], right_edge['x_pos']
-                
-                # 在这对侧边线之间，寻找最靠下的那条水平线
-                candidate_bottom_lines = []
-                for h_line_info in horizontal_lines:
-                    # 确保水平线在侧边线之间，并且在图像下半区
-                    if x_left < (h_line_info['line'][0] + h_line_info['line'][2]) / 2 < x_right and h_line_info['y_pos'] > h * 0.4:
-                        candidate_bottom_lines.append(h_line_info)
-                
-                if not candidate_bottom_lines:
-                    continue
-
-                # 选择最靠下的那条水平线作为底边基准 (y坐标最大)
-                best_bottom_line_info = max(candidate_bottom_lines, key=lambda item: item['y_pos'])
-                y_bottom = best_bottom_line_info['y_pos']
-                
-                # --- 几何重构 & 计算中心点 ---
-                # 用推算出的坐标计算中心
-                center_offset = paper_height_pixels / 2
-                x_center = (x_left + x_right) / 2
-                y_center = y_bottom - center_offset
-                
-                # 存储候选者信息，包括用于绘制的几何信息和用于选择的中心点/宽度
-                paper_candidates.append({
-                    'center': (x_center, y_center),
-                    'width': pair_width,
-                    'geo': {'x_left': x_left, 'x_right': x_right, 'y_bottom': y_bottom}
-                })
-
-        # --- 步骤 3: 根据 rect_count 选择最终的纸垛 ---
-        selected_paper = None
-        if not paper_candidates:
-            print("未找到符合条件的纸垛候选者")
-        elif rect_count == 1:
-            selected_paper = max(paper_candidates, key=lambda p: p['width'])
-        elif rect_count == 2:
-            left_papers = [p for p in paper_candidates if p['center'][0] < midline_x]
-            if left_papers:
-                selected_paper = max(left_papers, key=lambda p: p['width'])
-        elif rect_count == 3:
-            right_papers = [p for p in paper_candidates if p['center'][0] > midline_x]
-            if right_papers:
-                selected_paper = max(right_papers, key=lambda p: p['width'])
-
-        # --- 步骤 4: 处理和显示结果 ---
-        x_offset, y_offset = 0, 0
-        if selected_paper:
-            geo = selected_paper['geo']
-            x_left, x_right, y_bottom = int(geo['x_left']), int(geo['x_right']), int(geo['y_bottom'])
-            
-            x_center, y_center = selected_paper['center']
-            x_offset = x_center
-            y_offset = h - y_center
-            
-            # 绘制重构的、完整的底边 (粗绿色)
-            cv2.line(src_for_display, (x_left, y_bottom), (x_right, y_bottom), (0, 255, 0), 4)
-            
-            # 推算并绘制左右边 (只绘制下半部分，更美观)
-            y_top_half = y_bottom - int(paper_height_pixels / 2)
-            y_top = y_bottom - int(paper_height_pixels)
-            cv2.line(src_for_display, (x_left, y_bottom), (x_left, y_top), (255, 0, 0), 2)
-            cv2.line(src_for_display, (x_right, y_bottom), (x_right, y_top), (255, 0, 0), 2)
-            
-            # 绘制估算的中心点和坐标
-            cv2.circle(src_for_display, (int(x_center), int(y_center)), 7, (0, 0, 255), -1)
-            cv2.putText(src_for_display, f"XY: ({x_offset:.1f}, {y_offset:.1f})", 
-                        (int(x_center) + 10, int(y_center)), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            
-        # 总是绘制中线
-        cv2.line(src_for_display, (midline_x, 0), (midline_x, h), (0, 255, 255), 1)
-        cv2.putText(src_for_display, f"Midline", 
-                    (midline_x + 5, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        
-        cv2.imshow("Paper Detection", src_for_display)
-        cv2.waitKey(1)
-
-        return x_offset, y_offset
-
-
-
 
 
     # 新增辅助函数：计算直线方程 y = mx + c 或 x = c
@@ -1105,3 +962,97 @@ class CameraDetect:
         cv2.waitKey(1)
 
         return x_offset, y_offset
+
+    def _init_aruco_detector(self):
+        """初始化AprilTag检测器组件。"""
+        print("正在初始化AprilTag检测器...")
+        try:
+            # 从文件加载相机标定数据
+            with np.load('camera_calibration_data.npz') as data:
+                self.mtx = data['mtx']
+                self.dist = data['dist']
+            print("相机标定数据 'camera_calibration_data.npz' 加载成功。")
+        except FileNotFoundError:
+            print("!!! 致命错误: 未找到相机标定文件 'camera_calibration_data.npz'。")
+            print("!!! AprilTag定位功能将无法使用。")
+            return
+
+        # 定义使用的AprilTag字典
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+        # 创建检测器参数
+        self.aruco_params = cv2.aruco.DetectorParameters_create()
+        print("AprilTag检测器初始化完成。")
+
+
+
+    def locate_apriltag_2d(self):
+        """
+        通过AprilTag进行2D像素级定位，以画面左下角为原点。
+        返回AprilTag中心点在画面中的绝对像素坐标 (x, y)。
+
+        :return: (x_pos, y_pos) 元组。
+                 x_pos: 相对于左侧边缘的像素距离 (0 到 640)。
+                 y_pos: 相对于底部边缘的像素距离 (0 到 480)。
+                 如果未找到，则返回 (None, None)。
+        """
+        # --- 在函数开头加入这些打印语句 ---
+        # print("--- Diagnostics for locate_apriltag_2d ---")
+        # print(f"self.aruco_dict is: {self.aruco_dict}")
+        # print(f"self.aruco_params is: {self.aruco_params}")
+        if self.aruco_dict is None or self.aruco_params is None:
+            print("!!! 致命错误: Aruco检测器未初始化! 这将导致段错误。")
+            # 直接返回，避免程序崩溃
+            return 0, 0
+        # print("--- Diagnostics End ---")
+        if self.cap_locate is None:
+            print("错误: 定位相机未初始化。")
+            return 0, 0
+
+        ret, frame = self.cap_locate.read()
+        if not ret:
+            print("从定位相机捕获帧失败。")
+            return 0, 0
+            
+        height, width = frame.shape[:2]  # 应该是 480, 640
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray[300:,:] = 0
+        cv2.imshow("gray", gray)
+        corners, ids, _ = cv2.aruco.detectMarkers(
+            gray, self.aruco_dict, parameters=self.aruco_params
+        )
+
+        x_pos, y_pos = 0, 0
+
+        if ids is not None and len(ids) > 0:
+            tag_corners = corners[0][0]
+            
+            # 计算AprilTag的中心点在OpenCV坐标系下的位置 (原点在左上角)
+            center_opencv = tag_corners.mean(axis=0)
+            tag_center_x_cv, tag_center_y_cv = int(center_opencv[0]), int(center_opencv[1])
+
+            # --- 核心转换 ---
+            # X坐标：OpenCV的X轴和我们的目标X轴方向一致
+            x_pos = tag_center_x_cv
+            
+            # Y坐标：需要转换。height - tag_center_y_cv 将原点从左上角移到左下角
+            y_pos = height - tag_center_y_cv
+
+            # --- 调试画面 ---
+            # 绘制检测到的码的边界
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+            # 在AprilTag中心画一个圆
+            cv2.circle(frame, (tag_center_x_cv, tag_center_y_cv), 5, (0, 255, 0), -1)
+            
+            # 绘制坐标系基准点（左下角）
+            cv2.circle(frame, (0, height - 1), 10, (0, 0, 255), -1)
+            cv2.putText(frame, "Origin(0,0)", (10, height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+            # 显示新的坐标值
+            info_text = f"Pos (from B-L): X={x_pos}, Y={y_pos}"
+            cv2.putText(frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        
+        cv2.imshow("2D Localization (Bottom-Left Origin)", frame)
+        cv2.waitKey(1)
+
+        return x_pos, y_pos

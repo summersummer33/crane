@@ -26,12 +26,12 @@ aruco_params = cv2.aruco.DetectorParameters_create()
 
 
 # --- 3. 设置AprilTag的物理尺寸（单位：米） ---
-MARKER_SIZE_M = 0.15 # 示例：边长为5厘米，请修改为你自己的精确值
+MARKER_SIZE_M = 0.1 # 示例：边长为5厘米，请修改为你自己的精确值
 
 
 # --- 4. 打开摄像头并开始检测 ---
 # 尝试使用V4L2后端，这在Linux上更稳定，可能避免Segmentation Fault
-cap = cv2.VideoCapture(2, cv2.CAP_V4L2) 
+cap = cv2.VideoCapture(0, cv2.CAP_V4L2) 
 if not cap.isOpened():
     # 如果V4L2失败，回退到默认设置
     cap = cv2.VideoCapture(0)
@@ -80,6 +80,7 @@ while True:
             
             # 打印位姿信息
             distance = np.linalg.norm(tvecs[i][0]) # 更简洁的计算距离方式
+            print("angle:???",rvecs[i])
             print(f"ID: {ids[i][0]} | Distance: {distance:.2f} m | Position (x,y,z): {np.round(tvecs[i][0], 2)}")
 
     # 显示结果

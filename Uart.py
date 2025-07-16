@@ -20,7 +20,7 @@ class Task(IntEnum):
 
 class Uart:
     def __init__(self, port='/dev/ttyAMA2', baudrate=115200):
-        self.serial = serial.Serial(port, baudrate, timeout=0.1)
+        self.serial = serial.Serial(port, baudrate, timeout=0.01)
         self.lock = threading.Lock()
         self.running = True
         self.current_task = None
@@ -78,14 +78,13 @@ class Uart:
     def send_move_command(self, direction):
         """
         发送移动指令
-        :param direction: 0-左移, 1-右移
-        :param distance: 移动距离(mm)
         """
         with self.lock:
             cmd_data = [direction, 0, 0, 0]
             packet = self._pack_command(RobotCommand.MOVE, cmd_data)
             self.serial.write(packet)
-            print(f"发送移动指令: 方向{'左' if direction==0 else '右'} ")
+            print("packet:",packet)
+            print(f"发送移动指令")
 
     # def send_grab_command(self, x, y, layer):
     #     """
@@ -104,14 +103,10 @@ class Uart:
         """
         发送包含高度信息的放置指令。
         :param command: 一个包含放置信息的字典，格式如下：
-                        {
-                            'zone': 'a', 'b', 'c', 'd', 'e', 'f',
-                            'height': 'high' or 'low',
-                            'box_num': 1-6 (可选，用于日志打印)
-                        }
         """
         # --- 数据转换与校验 ---
         boxkey_char = command.get('box_key')
+        put_down_side = command.get('put_down_side')
         height_char = command.get('height')
 
         # 处理 box_key 映射
@@ -119,17 +114,17 @@ class Uart:
             box_id = ord(boxkey_char) - ord('A') + 1  # 'A'->1, 'B'->2, ..., 'F'->6
 
         if height_char == 'high':
-            height_id = 0 # 0 代表高位
+            height_id = 1 # 1 代表高位
         elif height_char == 'low':
-            height_id = 1 # 1 代表低位
+            height_id = 0 # 0 代表低位
         else:
             print(f"错误：无效的高度信息 '{height_char}'")
             return False
 
         with self.lock:
-            cmd_data = [box_id, height_id, 0, 0]
+            cmd_data = [box_id, put_down_side, height_id, 0]
             packet = self._pack_command(RobotCommand.PLACE, cmd_data)
-
+            print("place_packet:",packet)
             self.serial.write(packet) 
             
             # # 5. 打印详细的日志信息
@@ -147,14 +142,15 @@ class Uart:
         with self.lock:
             cmd_data = [x, y]
             packet = self._pack_command(RobotCommand.LOCATE, cmd_data)
-            print(f"packet: { [hex(b) for b in packet] }") 
+            # print(f"packet: { [hex(b) for b in packet] }") 
             self.serial.write(packet)
-            print(f"发送定位坐标指令: X{x} Y{y}")
+            # if x != 0 and y != 0 :
+            #     print(f"发送定位坐标指令: X{x} Y{y}")
 
     def _receive_handler(self):
         """接收处理线程"""
         while self.running:
-            if self.serial.in_waiting >= 3:  # 最小有效数据长度
+            if self.serial.in_waiting >= 4:  # 最小有效数据长度
                 header = self.serial.read(1)
                 if header == b'\x02':
                     # cmd = ord(self.serial.read(1))

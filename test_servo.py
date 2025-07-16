@@ -6,16 +6,19 @@ GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
 
 
+#####dingweizhengdui   297---     shibiezhengdui---117    170kanzuo      70kanyou
+
 #  GPIO12--PWM--右侧一列倒数第五个
 
 # servo_pin 舵机信号线接树莓派GPIO17
 def complex_change(servo_pin):
 	GPIO.setup(servo_pin, GPIO.OUT, initial = False)
 	p = GPIO.PWM(servo_pin, 50)  # 初始频率为50HZ
-	p.start(angleToDutyCycle(105))  # 舵机初始化角度为90，p.start(5.833)
-	sleep(1.5)
+	p.start(angleToDutyCycle(117))  # 舵机初始化角度为90，p.start(5.833)
+	sleep(0.1)
 
 	p.ChangeDutyCycle(0)  # 清空当前占空比，使舵机停止抖动
+	sleep(1)
 
 	return p
 
@@ -33,29 +36,51 @@ def cleanup():
 
 if __name__ == '__main__':
 	try:
-		p = complex_change(12)
-		while True:
-			# angle = int(input('水平旋转度数：'))
-			# 17 水平转动
-			# p = complex_change(12)
-			# for i in range(0,5):
-			# 	angle = i*90
-			# 	p.ChangeDutyCycle(angleToDutyCycle(angle))
-			# 	print("angle:",angle)
-			# 	sleep(0.1)
-			# 	p.ChangeDutyCycle(0)  # 清空当前占空比，使舵机停止抖动
-			# 	sleep(1.5)
-			# for i in range(4, -1, -1):
-			# 	angle = i * 90
-			# 	p.ChangeDutyCycle(angleToDutyCycle(angle))
-			# 	print("angle:",angle)
-			# 	sleep(0.1)
-			# 	p.ChangeDutyCycle(0)  # 清空当前占空比，使舵机停止抖动
-			# 	sleep(1.5)
+		p = complex_change(18)
+		sleep(1)
+		# print("initial")
+		# # while True:
+		# # 	# angle = int(input('水平旋转度数：'))
+		# # 	# 17 水平转动
+		p.ChangeDutyCycle(angleToDutyCycle(297))
+		sleep(0.08)
+		p.ChangeDutyCycle(0)
+		sleep(1)
+		print("297")
+		p.ChangeDutyCycle(angleToDutyCycle(170))
+		sleep(0.08)
+		p.ChangeDutyCycle(0)
+		sleep(1)
+		print("170")
+		# p.ChangeDutyCycle(angleToDutyCycle(70))
+		# sleep(0.08)
+		# p.ChangeDutyCycle(0)
+		# sleep(1)
+		# print("70")
+		# p.ChangeDutyCycle(angleToDutyCycle(297))
+		# sleep(0.08)
+		# p.ChangeDutyCycle(0)
+		# sleep(1)
+		# print("297")
+		# print("360360")
+		# 	for i in range(0,4):
+		# 		angle = i*90
+		# 		p.ChangeDutyCycle(angleToDutyCycle(angle))
+		# 		print("angle:",angle)
+		# 		sleep(0.1)
+		# 		p.ChangeDutyCycle(0)  # 清空当前占空比，使舵机停止抖动
+		# 		sleep(1.5)
+		# 	for i in range(4, -1, -1):
+		# 		angle = i * 90
+		# 		p.ChangeDutyCycle(angleToDutyCycle(angle))
+		# 		print("angle:",angle)
+		# 		sleep(0.1)
+		# 		p.ChangeDutyCycle(0)  # 清空当前占空比，使舵机停止抖动
+		# 		sleep(1.5)
 				
 
-			# sleep(0.1)
-			p.ChangeDutyCycle(0)  # 清空当前占空比，使舵机停止抖动
+		# 	# sleep(0.1)
+		# 	p.ChangeDutyCycle(0)  # 清空当前占空比，使舵机停止抖动
 	except KeyboardInterrupt:
         # 捕获Ctrl+C中断
 		print("\n检测到Ctrl+C，正在清理资源...")
